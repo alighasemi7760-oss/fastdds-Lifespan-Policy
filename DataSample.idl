@@ -1,0 +1,5 @@
+struct DataSample {
+    unsigned long id;
+    unsigned long long timestamp;
+    string message;
+};

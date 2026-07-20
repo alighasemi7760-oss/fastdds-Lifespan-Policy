@@ -1,0 +1,22 @@
+# --- پوشه‌های خروجی کامپایل و فایل‌های موقت ---
+build/
+*.log
+*.swp
+.DS_Store
+
+# --- فایل‌های تولید شده خودکار توسط Fast-DDS-Gen ---
+# این فایل‌ها با هر بار اجرای fastddsgen دوباره ساخته می‌شوند و نباید در Git کامیت شوند.
+DataSample.hpp
+DataSampleCdrAux.hpp
+DataSampleCdrAux.ipp
+DataSamplePubSubTypes.cxx
+DataSamplePubSubTypes.hpp
+DataSampleTypeObjectSupport.cxx
+DataSampleTypeObjectSupport.hpp
+DataSampleApplication.cxx
+DataSampleApplication.hpp
+DataSamplePublisherApp.cxx
+DataSamplePublisherApp.hpp
+DataSampleSubscriberApp.cxx
+DataSampleSubscriberApp.hpp
+DataSamplemain.cxx
