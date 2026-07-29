@@ -13,7 +13,6 @@ def parse_log(filepath):
 
     with open(filepath, 'r') as f:
         for line in f:
-            # پشتیبانی هم از 'Total Latency:' و هم از 'Latency:'
             match = re.search(r'Received ID:\s*(\d+)\s*\|\s*(?:Total\s+)?Latency:\s*(\d+)\s*ms', line)
             if match:
                 sample_id = int(match.group(1))
@@ -49,23 +48,28 @@ def calculate_metrics(ids):
 std_loss = calculate_metrics(std_ids)
 adp_loss = calculate_metrics(adp_ids)
 
-# ساخت شکل اصلی با ۶ پنل
-fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-fig.suptitle('Comprehensive Performance Benchmark: Standard vs Adaptive QoS (DDIL Engine)', fontsize=16, fontweight='bold')
+# نگاشت ۶ استیج بر روی Depth و Reliability
+# Stages 1-2: Reliable (Depth 20 -> 10)
+# Stages 3-6: BestEffort (Depth 5 -> 3 -> 2 -> 1)
+history_map = {1:20, 2:10, 3:5, 4:3, 5:2, 6:1}
+rel_map = {1:1, 2:1, 3:0, 4:0, 5:0, 6:0}
 
-# پنل ۱: Latency
+fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+fig.suptitle('Autonomous Adaptive QoS Benchmark (6-Stage DDIL Engine)', fontsize=16, fontweight='bold')
+
+# 1. Latency
 ax1 = axes[0, 0]
 if std_ids:
     ax1.plot(std_ids, std_lat, label='Standard QoS (Static)', color='red', alpha=0.7, linestyle='--')
 if adp_ids:
-    ax1.plot(adp_ids, adp_lat, label='Adaptive QoS', color='green', linewidth=1.5)
+    ax1.plot(adp_ids, adp_lat, label='Adaptive QoS (Autonomous)', color='green', linewidth=1.5)
 ax1.set_title('1. End-to-End Latency (ms)')
 ax1.set_xlabel('Sample ID')
 ax1.set_ylabel('Latency (ms)')
 ax1.grid(True, linestyle=':', alpha=0.6)
 ax1.legend()
 
-# پنل ۲: Loss Rate
+# 2. Loss Rate
 ax2 = axes[0, 1]
 if std_loss:
     ax2.plot(range(1, len(std_loss)+1), std_loss, label='Standard QoS', color='red', linestyle='--')
@@ -77,7 +81,7 @@ ax2.set_ylabel('Loss Rate (%)')
 ax2.grid(True, linestyle=':', alpha=0.6)
 ax2.legend()
 
-# پنل ۳: Throughput
+# 3. Throughput
 ax3 = axes[0, 2]
 if std_ids:
     ax3.hist(std_ids, bins=20, alpha=0.4, label='Standard Received', color='red')
@@ -89,40 +93,38 @@ ax3.set_ylabel('Received Packets Count')
 ax3.grid(True, linestyle=':', alpha=0.6)
 ax3.legend()
 
-# پنل ۴: Adaptive Stage
+# 4. 6-Stage Active Level
 ax4 = axes[1, 0]
 if std_ids:
-    ax4.step(std_ids, [1]*len(std_ids), color='red', linestyle='--', label='Standard (Fixed S1)')
+    ax4.step(std_ids, [1]*len(std_ids), color='red', linestyle='--', linewidth=2, label='Standard (Fixed S1)')
 if adp_stages:
-    ax4.step(adp_ids, adp_stages, color='blue', where='post', label='Adaptive Engine')
-ax4.set_title('4. Active Adaptive Stage (1 to 4)')
+    ax4.step(adp_ids, adp_stages, color='green', where='post', label='Autonomous Monitor')
+ax4.set_title('4. Active Adaptive Stage (1 to 6)')
 ax4.set_xlabel('Sample ID')
 ax4.set_ylabel('Stage Level')
-ax4.set_yticks([1, 2, 3, 4])
-ax4.set_yticklabels(['S1 (Opt)', 'S2 (Mild)', 'S3 (Mod)', 'S4 (Sev)'])
+ax4.set_yticks([1, 2, 3, 4, 5, 6])
+ax4.set_yticklabels(['S1 (Opt)', 'S2 (Mild)', 'S3 (Mod)', 'S4 (High)', 'S5 (Sev)', 'S6 (Ext)'])
 ax4.grid(True, linestyle=':', alpha=0.6)
 ax4.legend()
 
-# پنل ۵: History Depth
+# 5. History Depth
 ax5 = axes[1, 1]
 if std_ids:
-    ax5.step(std_ids, [20]*len(std_ids), color='red', linestyle='--', label='Standard (Fixed 20)')
+    ax5.step(std_ids, [20]*len(std_ids), color='red', linestyle='--', linewidth=2, label='Standard (Fixed 20)')
 if adp_stages:
-    history_map = {1:20, 2:10, 3:3, 4:1}
-    ax5.step(adp_ids, [history_map[s] for s in adp_stages], color='orange', where='post', label='Adaptive Depth')
-ax5.set_title('5. Dynamic History Qos Depth (Buffer Size)')
+    ax5.step(adp_ids, [history_map[s] for s in adp_stages], color='green', where='post', label='Adaptive Depth')
+ax5.set_title('5. Dynamic History QoS Depth (Buffer Size)')
 ax5.set_xlabel('Sample ID')
 ax5.set_ylabel('History Depth')
 ax5.grid(True, linestyle=':', alpha=0.6)
 ax5.legend()
 
-# پنل ۶: Reliability Mode
+# 6. Reliability Mode
 ax6 = axes[1, 2]
 if std_ids:
-    ax6.step(std_ids, [1]*len(std_ids), color='red', linestyle='--', label='Standard (Fixed Reliable)')
+    ax6.step(std_ids, [1]*len(std_ids), color='red', linestyle='--', linewidth=2, label='Standard (Fixed Reliable)')
 if adp_stages:
-    rel_map = {1:1, 2:1, 3:0, 4:0}
-    ax6.step(adp_ids, [rel_map[s] for s in adp_stages], color='purple', where='post', label='Adaptive Rel')
+    ax6.step(adp_ids, [rel_map[s] for s in adp_stages], color='green', where='post', label='Adaptive Rel')
 ax6.set_title('6. Dynamic Reliability QoS Mode')
 ax6.set_xlabel('Sample ID')
 ax6.set_ylabel('Mode')
@@ -136,4 +138,4 @@ plt.subplots_adjust(top=0.92)
 plt.savefig(os.path.join(LOG_DIR, 'dds_comprehensive_benchmark_6panels.png'), dpi=200)
 plt.close()
 
-print("[✔] 6-Panel Benchmark Plot generated successfully!")
+print("[✔] 6-Stage Autonomous Benchmark Plot successfully generated!")
