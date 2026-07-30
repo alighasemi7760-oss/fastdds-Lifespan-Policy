@@ -1,0 +1,4 @@
+/root/dds_qos_project/build/CMakeFiles/dds_standard.dir
+/root/dds_qos_project/build/CMakeFiles/dds_adaptive.dir
+/root/dds_qos_project/build/CMakeFiles/edit_cache.dir
+/root/dds_qos_project/build/CMakeFiles/rebuild_cache.dir
