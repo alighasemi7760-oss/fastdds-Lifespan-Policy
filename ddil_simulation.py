@@ -91,16 +91,19 @@ def count_received(log_path):
         return sum(1 for line in f if "Received ID:" in line)
 
 
-def wait_for_completion(sub_log_path, expected_id=TOTAL_PACKETS, max_wait=MAX_DRAIN_WAIT, poll_interval=1):
-    """به‌جای sleep ثابت، هر ثانیه چک می‌کند آیا آخرین پکت رسیده یا نه؛
-    حداکثر تا max_wait ثانیه صبر می‌کند، نه بیشتر."""
+def wait_for_completion(sub_log_path, expected_count=TOTAL_PACKETS, max_wait=MAX_DRAIN_WAIT, poll_interval=1):
+    """هر ثانیه چک می‌کند آیا تعداد کل پکت‌های دریافتی به expected_count رسیده یا نه.
+    توجه: چک کردن صرفاً 'آخرین ID دریافتی' اشتباه است، چون پیش‌فرض DestinationOrder
+    در FastDDS برابر BY_RECEPTION_TIMESTAMP است (نه BY_SOURCE_TIMESTAMP)؛ یعنی یک پکت
+    با ID بزرگ‌تر (مثلاً ارسال‌شده در فاز Recovery با تاخیر کم) می‌تواند زودتر از
+    پکت‌های قدیمی‌ترِ گیرکرده در صف retransmission برسد. حداکثر تا max_wait ثانیه صبر می‌کند."""
     waited = 0
     while waited < max_wait:
-        if last_received_id(sub_log_path) >= expected_id:
+        if count_received(sub_log_path) >= expected_count:
             return True, waited
         time.sleep(poll_interval)
         waited += poll_interval
-    return last_received_id(sub_log_path) >= expected_id, waited
+    return count_received(sub_log_path) >= expected_count, waited
 
 
 def append_summary(mode, run_idx, received, expected, completed, waited_s):

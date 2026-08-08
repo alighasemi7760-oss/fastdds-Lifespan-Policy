@@ -181,7 +181,10 @@ static void run_publisher(DomainParticipant* participant) {
             std::chrono::system_clock::now().time_since_epoch()).count();
         writer->write(&sample);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // فاصله 160ms عمداً انتخاب شده: 300 * 160ms = 48000ms،
+        // دقیقاً برابر مجموع مدت‌زمان مراحل STAGES در ddil_simulation.py
+        // (5*6 + 8 + 10 = 48s). اگر جدول STAGES تغییر کرد، این مقدار را هم به‌روز کن.
+        std::this_thread::sleep_for(std::chrono::milliseconds(160));
     }
 
     net_monitor.stop();
