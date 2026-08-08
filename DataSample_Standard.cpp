@@ -56,9 +56,10 @@ public:
 
 using namespace eprosima::fastdds::dds;
 
-// مقدار ثابت Lifespan برای سناریوی Baseline (بدون سازگاری با شبکه)
-// این مقدار عمداً برابر با میانه‌ی بازه‌ی adaptive انتخاب شده تا مقایسه منصفانه باشد
+// مقادیر ثابت QoS برای سناریوی Baseline (بدون سازگاری با شبکه).
+// هر دو عمداً برابر با میانه‌ی بازه‌ی adaptive انتخاب شده‌اند تا مقایسه منصفانه باشد.
 static const int STANDARD_FIXED_LIFESPAN_MS = 2000;
+static const int STANDARD_FIXED_DEADLINE_MS = 1000;
 
 class StandardListener : public DataReaderListener {
 public:
@@ -109,13 +110,16 @@ int main(int argc, char** argv) {
         DataWriterQos writer_qos = DATAWRITER_QOS_DEFAULT;
         writer_qos.reliability().kind = RELIABLE_RELIABILITY_QOS;
         writer_qos.history().kind = KEEP_ALL_HISTORY_QOS;
-        // Lifespan ثابت: کل اجرا با همین مقدار باقی می‌ماند (هیچ سازگاری با شبکه ندارد)
+        // Lifespan و Deadline ثابت: کل اجرا با همین مقادیر باقی می‌مانند (هیچ سازگاری با شبکه ندارند)
         writer_qos.lifespan().duration = eprosima::fastdds::dds::Duration_t(
             STANDARD_FIXED_LIFESPAN_MS / 1000, (STANDARD_FIXED_LIFESPAN_MS % 1000) * 1000000);
+        writer_qos.deadline().period = eprosima::fastdds::dds::Duration_t(
+            STANDARD_FIXED_DEADLINE_MS / 1000, (STANDARD_FIXED_DEADLINE_MS % 1000) * 1000000);
 
         DataWriter* writer = publisher->create_datawriter(topic, writer_qos);
         std::cout << "[Publisher-Standard] Transmission started (Reliable, Fixed Lifespan="
-                  << STANDARD_FIXED_LIFESPAN_MS << "ms)..." << std::endl;
+                  << STANDARD_FIXED_LIFESPAN_MS << "ms, Fixed Deadline="
+                  << STANDARD_FIXED_DEADLINE_MS << "ms)..." << std::endl;
 
         for (uint32_t id = 1; id <= 300; ++id) {
             DataSampleStruct sample;
@@ -124,10 +128,10 @@ int main(int argc, char** argv) {
                 std::chrono::system_clock::now().time_since_epoch()).count();
 
             writer->write(&sample);
-            // فاصله 160ms عمداً انتخاب شده: 300 * 160ms = 48000ms،
+            // فاصله 190ms عمداً انتخاب شده: 300 * 190ms = 57000ms،
             // دقیقاً برابر مجموع مدت‌زمان مراحل STAGES در ddil_simulation.py
-            // (5*6 + 8 + 10 = 48s). اگر جدول STAGES تغییر کرد، این مقدار را هم به‌روز کن.
-            std::this_thread::sleep_for(std::chrono::milliseconds(160));
+            // (5*6 + 9 + 8 + 10 = 57s، شامل مرحله جدید Intermittent).
+            std::this_thread::sleep_for(std::chrono::milliseconds(190));
         }
     }
     return 0;

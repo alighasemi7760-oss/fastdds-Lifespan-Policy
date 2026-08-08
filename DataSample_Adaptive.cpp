@@ -8,6 +8,7 @@
 #include <vector>
 #include <numeric>
 #include <mutex>
+#include <algorithm>
 
 #include <fastdds/dds/domain/DomainParticipantFactory.hpp>
 #include <fastdds/dds/domain/DomainParticipant.hpp>
@@ -58,12 +59,13 @@ public:
 };
 
 // ------------------- ساختار بازخورد (Subscriber -> Publisher) -------------------
-// Subscriber معیارهای واقعی اندازه‌گیری‌شده را برای Publisher می‌فرستد
-// تا NetworkMonitor سمت Publisher بتواند Lifespan را واقعاً تنظیم کند.
+// Subscriber معیارهای واقعی اندازه‌گیری‌شده (شامل throughput) را برای Publisher
+// می‌فرستد تا NetworkMonitor سمت Publisher بتواند Lifespan و Deadline را تنظیم کند.
 struct NetworkFeedback {
     int32_t latency_ms;
     float loss_rate;
     int32_t jitter_ms;
+    float throughput_kbps;   // بُعد Limited: پهنای‌باند واقعی مشاهده‌شده در پنجره اخیر
 };
 
 class NetworkFeedbackPubSubType : public TopicDataType {
@@ -93,7 +95,7 @@ public:
     bool compute_key(const void*, eprosima::fastdds::rtps::InstanceHandle_t&, bool) override { return false; }
 };
 
-// نگاشت Stage (1..6) به مقدار Lifespan؛ هرچه شبکه بحرانی‌تر، داده‌ی بایات سریع‌تر دور ریخته می‌شود
+// نگاشت Stage (1..6) به Lifespan: هرچه شبکه بحرانی‌تر، داده‌ی بایات سریع‌تر دور ریخته می‌شود
 static int stage_to_lifespan_ms(int stage) {
     switch (stage) {
         case 1: return 5000; // Optimal
@@ -106,8 +108,24 @@ static int stage_to_lifespan_ms(int stage) {
     }
 }
 
+// نگاشت Stage به Deadline: برخلاف Lifespan، جهتش معکوس است.
+// Deadline یعنی «حداکثر بازه‌ی قابل‌قبول بین دو به‌روزرسانی». هرچه شبکه بحرانی‌تر،
+// این بازه باید سهل‌گیرانه‌تر (بزرگ‌تر) شود؛ وگرنه سیستم مدام نقض Deadline گزارش
+// می‌دهد بدون این‌که واقعاً کاری از دستش بربیاید.
+static int stage_to_deadline_ms(int stage) {
+    switch (stage) {
+        case 1: return 200;   // Optimal: انتظار به‌روزرسانی مکرر و تازه
+        case 2: return 400;
+        case 3: return 600;
+        case 4: return 1000;
+        case 5: return 1500;
+        case 6: return 2500;  // Extreme Blackout: بسیار سهل‌گیرانه
+        default: return 200;
+    }
+}
+
 // =====================================================================
-// نقش Publisher: می‌نویسد + به Feedback گوش می‌دهد + Lifespan را زنده تنظیم می‌کند
+// نقش Publisher: می‌نویسد + به Feedback گوش می‌دهد + Lifespan/Deadline را زنده تنظیم می‌کند
 // =====================================================================
 class FeedbackListener : public DataReaderListener {
 public:
@@ -119,6 +137,7 @@ public:
         while (reader->take_next_sample(&fb, &info) == RETCODE_OK) {
             if (!info.valid_data) continue;
             monitor_.update_metrics(fb.latency_ms, fb.loss_rate, fb.jitter_ms);
+            monitor_.update_throughput(fb.throughput_kbps);
         }
     }
 private:
@@ -142,6 +161,7 @@ static void run_publisher(DomainParticipant* participant) {
     writer_qos.history().kind = KEEP_LAST_HISTORY_QOS;
     writer_qos.history().depth = 10;
     writer_qos.lifespan().duration = eprosima::fastdds::dds::Duration_t(5, 0); // شروع با Stage 1
+    writer_qos.deadline().period = eprosima::fastdds::dds::Duration_t(0, 200 * 1000000); // 200ms، شروع با Stage 1
 
     DataWriter* writer = publisher->create_datawriter(data_topic, writer_qos);
 
@@ -157,20 +177,27 @@ static void run_publisher(DomainParticipant* participant) {
 
     net_monitor.start();
 
-    std::cout << "[Publisher-Adaptive] Transmission started (Best-Effort, Adaptive Lifespan)..." << std::endl;
+    std::cout << "[Publisher-Adaptive] Transmission started (Best-Effort, Adaptive Lifespan+Deadline)..." << std::endl;
 
     int applied_stage = 1;
     for (uint32_t id = 1; id <= 300; ++id) {
-        // اعمال Lifespan جدید در صورت تغییر Stage (خواندن زنده از NetworkMonitor)
+        // اعمال Lifespan و Deadline جدید در صورت تغییر Stage (خواندن زنده از NetworkMonitor)
         int stage_now = net_monitor.get_current_stage();
         if (stage_now != applied_stage) {
             DataWriterQos qos = writer->get_qos();
+
             int lifespan_ms = stage_to_lifespan_ms(stage_now);
             qos.lifespan().duration = eprosima::fastdds::dds::Duration_t(
                 lifespan_ms / 1000, (lifespan_ms % 1000) * 1000000);
+
+            int deadline_ms = stage_to_deadline_ms(stage_now);
+            qos.deadline().period = eprosima::fastdds::dds::Duration_t(
+                deadline_ms / 1000, (deadline_ms % 1000) * 1000000);
+
             writer->set_qos(qos);
             std::cout << "[Autonomous QoS Engine] Stage " << applied_stage << " -> " << stage_now
                       << " | New Lifespan: " << lifespan_ms << "ms"
+                      << " | New Deadline: " << deadline_ms << "ms"
                       << " (NSI: " << net_monitor.get_current_stress_index() << "/100)" << std::endl;
             applied_stage = stage_now;
         }
@@ -181,17 +208,18 @@ static void run_publisher(DomainParticipant* participant) {
             std::chrono::system_clock::now().time_since_epoch()).count();
         writer->write(&sample);
 
-        // فاصله 160ms عمداً انتخاب شده: 300 * 160ms = 48000ms،
+        // فاصله 190ms عمداً انتخاب شده: 300 * 190ms = 57000ms،
         // دقیقاً برابر مجموع مدت‌زمان مراحل STAGES در ddil_simulation.py
-        // (5*6 + 8 + 10 = 48s). اگر جدول STAGES تغییر کرد، این مقدار را هم به‌روز کن.
-        std::this_thread::sleep_for(std::chrono::milliseconds(160));
+        // (5*6 + 9 + 8 + 10 = 57s، شامل مرحله جدید Intermittent).
+        // اگر جدول STAGES تغییر کرد، این مقدار را هم به‌روز کن.
+        std::this_thread::sleep_for(std::chrono::milliseconds(190));
     }
 
     net_monitor.stop();
 }
 
 // =====================================================================
-// نقش Subscriber: پکت واقعی می‌گیرد، latency/jitter/loss واقعی حساب می‌کند
+// نقش Subscriber: پکت واقعی می‌گیرد، latency/jitter/loss/throughput واقعی حساب می‌کند
 // و آن‌ها را روی کانال Feedback برای Publisher می‌فرستد
 // =====================================================================
 class AdaptiveDataListener : public DataReaderListener {
@@ -209,8 +237,9 @@ public:
             int64_t latency = now - static_cast<int64_t>(sample.timestamp);
             if (latency <= 0) latency = 1;
 
-            // تشخیص افت پکت واقعی از روی جهش در id (نه تخمین از روی تاخیر)
             std::lock_guard<std::mutex> lock(mutex_);
+
+            // تشخیص افت پکت واقعی از روی جهش در id (نه تخمین از روی تاخیر)
             if (expected_id_ != 0 && sample.id > expected_id_) {
                 uint32_t missed = sample.id - expected_id_;
                 for (uint32_t i = 0; i < missed; ++i) push_window(0);
@@ -225,15 +254,31 @@ public:
             float loss_rate = window_.empty() ? 0.0f :
                 (1.0f - (static_cast<float>(received_in_window) / window_.size())) * 100.0f;
 
+            // پنجره‌ی ۲ ثانیه‌ای برای محاسبه throughput واقعی (بُعد Limited)
+            recent_times_.push_back(now);
+            while (!recent_times_.empty() && (now - recent_times_.front()) > 2000) {
+                recent_times_.erase(recent_times_.begin());
+            }
+            float throughput_kbps = 0.0f;
+            if (recent_times_.size() > 1) {
+                int64_t span_ms = recent_times_.back() - recent_times_.front();
+                if (span_ms > 0) {
+                    double bits = static_cast<double>(recent_times_.size()) * sizeof(DataSampleStruct) * 8.0;
+                    throughput_kbps = static_cast<float>(bits / span_ms); // bits/ms == kbit/s
+                }
+            }
+
             std::cout << "[Subscriber-Adaptive] Received ID: " << sample.id
                       << " | Latency: " << latency << "ms"
                       << " | Jitter: " << jitter << "ms"
-                      << " | LossRate: " << static_cast<int>(loss_rate) << "%" << std::endl;
+                      << " | LossRate: " << static_cast<int>(loss_rate) << "%"
+                      << " | Throughput: " << throughput_kbps << "kbps" << std::endl;
 
             NetworkFeedback fb;
             fb.latency_ms = static_cast<int32_t>(latency);
             fb.loss_rate = loss_rate;
             fb.jitter_ms = jitter;
+            fb.throughput_kbps = throughput_kbps;
             feedback_writer_->write(&fb);
         }
     }
@@ -249,6 +294,7 @@ private:
     uint32_t expected_id_ = 0;
     int64_t prev_latency_ = 0;
     std::vector<int> window_;
+    std::vector<int64_t> recent_times_;
 };
 
 static void run_subscriber(DomainParticipant* participant) {

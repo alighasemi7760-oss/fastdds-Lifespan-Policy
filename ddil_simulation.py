@@ -13,8 +13,8 @@ LOG_DIR = "/tmp/dds_logs"
 SUMMARY_CSV = os.path.join(LOG_DIR, "summary.csv")
 
 TOTAL_PACKETS = 300        # باید با تعداد نمونه‌های تولیدشده در فایل‌های cpp یکسان باشد
-NUM_RUNS = 3                # تعداد تکرار هر سناریو (برای گزارش میانگین/انحراف‌معیار در تز افزایش بده، مثلاً 5 یا 10)
-MAX_DRAIN_WAIT = 30         # حداکثر ثانیه‌ای که برای تکمیل تحویل صبر می‌کنیم (به‌جای sleep ثابت)
+NUM_RUNS = 10               # تعداد تکرار هر سناریو (برای گزارش میانگین/انحراف‌معیار در تز افزایش بده، مثلاً 5 یا 10)
+MAX_DRAIN_WAIT = 30         # حداکثر ثانیه‌ای که برای تکمیل تحویل صبر می‌کنیم
 
 env_vars = os.environ.copy()
 if os.path.exists(CONFIG_PATH):
@@ -22,14 +22,14 @@ if os.path.exists(CONFIG_PATH):
     env_vars["FASTDDS_DEFAULT_PROFILES_FILE"] = CONFIG_PATH
 
 # -----------------------------------------------------------------------
-# جدول مراحل DDIL: هر مرحله دارای delay/loss/jitter/rate/duration مستقل است.
-# jitter دیگر مقدار ثابت نیست و متناسب با شدت هر مرحله افزایش می‌یابد.
-# rate بُعد "Limited" (محدودیت پهنای‌باند) را که قبلاً اصلاً شبیه‌سازی نمی‌شد اضافه می‌کند.
-# دو مرحله‌ی آخر (Blackout Probe و Recovery) قبلاً در اسکریپت وجود نداشتند:
-#   - Blackout Probe: افت تقریباً کامل (99%) برای تست رفتار سیستم وقتی کانال Feedback
-#     عملاً از کار می‌افتد (محدودیت شناخته‌شده‌ای که باید در تز مستند شود).
-#   - Recovery: بازگشت به شرایط سالم، برای دیدن اینکه NetworkMonitor چقدر سریع
-#     به Stage 1 برمی‌گردد (تست جهت معکوس Hysteresis).
+# جدول مراحل DDIL. هر مرحله‌ی عادی دارای delay/loss/jitter/rate/duration است.
+# مرحله‌ی "Intermittent" نوع متفاوتی دارد: به‌جای یک تنظیم ثابت، به‌طور مکرر
+# بین «قطع کامل» و «وصل» toggle می‌کند تا بُعد "Intermittent" از DDIL
+# (که قبلاً اصلاً شبیه‌سازی نمی‌شد) واقعاً تست شود.
+#
+# مجموع مدت این جدول باید با فاصله‌ی ارسال publisher (در فایل‌های cpp) هماهنگ باشد:
+# 5*6 (Stage1-6) + 9 (Intermittent: 6*1.5s) + 8 (Blackout Probe) + 10 (Recovery) = 57s
+# 57000ms / 300 packets = 190ms per packet  <-- همین مقدار در DataSample_*.cpp ست شده
 # -----------------------------------------------------------------------
 STAGES = [
     {"label": "Stage 1: Optimal Condition",       "delay": 0,    "loss": 0,  "jitter": 0,   "rate": None,       "duration": 5},
@@ -38,6 +38,15 @@ STAGES = [
     {"label": "Stage 4: High DDIL",                "delay": 450,  "loss": 30, "jitter": 65,  "rate": "1mbit",    "duration": 5},
     {"label": "Stage 5: Severe DDIL",              "delay": 700,  "loss": 50, "jitter": 100, "rate": "512kbit",  "duration": 5},
     {"label": "Stage 6: Extreme Blackout",         "delay": 1200, "loss": 85, "jitter": 180, "rate": "128kbit",  "duration": 5},
+    {
+        "label": "Intermittent Connectivity (I in DDIL)",
+        "type": "intermittent",
+        "toggle_count": 6,          # تعداد دفعات toggle (نصفش قطع، نصفش وصل)
+        "toggle_duration": 1.5,     # ثانیه در هر حالت -> مجموع 9 ثانیه
+        "connected_delay": 50,
+        "connected_jitter": 10,
+        "connected_rate": "5mbit",
+    },
     {"label": "Blackout Probe (near-total loss)",  "delay": 1500, "loss": 99, "jitter": 200, "rate": "64kbit",   "duration": 8},
     {"label": "Recovery (back to Optimal)",        "delay": 0,    "loss": 0,  "jitter": 0,   "rate": None,       "duration": 10},
 ]
@@ -70,6 +79,20 @@ def apply_netem(loss, delay, jitter=0, rate=None):
         run_cmd(f"sudo tc qdisc add dev {dev} root netem {netem_args}")
 
 
+def run_intermittent(stage):
+    print(f"[{stage['label']}] toggling connectivity {stage['toggle_count']} times "
+          f"({stage['toggle_duration']}s each)")
+    for i in range(stage["toggle_count"]):
+        if i % 2 == 0:
+            print("    -> Disconnected (100% loss)")
+            apply_netem(loss=100, delay=0)
+        else:
+            print("    -> Reconnected")
+            apply_netem(loss=0, delay=stage["connected_delay"],
+                        jitter=stage["connected_jitter"], rate=stage["connected_rate"])
+        time.sleep(stage["toggle_duration"])
+
+
 def last_received_id(log_path):
     if not os.path.exists(log_path):
         return 0
@@ -95,8 +118,8 @@ def wait_for_completion(sub_log_path, expected_count=TOTAL_PACKETS, max_wait=MAX
     """هر ثانیه چک می‌کند آیا تعداد کل پکت‌های دریافتی به expected_count رسیده یا نه.
     توجه: چک کردن صرفاً 'آخرین ID دریافتی' اشتباه است، چون پیش‌فرض DestinationOrder
     در FastDDS برابر BY_RECEPTION_TIMESTAMP است (نه BY_SOURCE_TIMESTAMP)؛ یعنی یک پکت
-    با ID بزرگ‌تر (مثلاً ارسال‌شده در فاز Recovery با تاخیر کم) می‌تواند زودتر از
-    پکت‌های قدیمی‌ترِ گیرکرده در صف retransmission برسد. حداکثر تا max_wait ثانیه صبر می‌کند."""
+    با ID بزرگ‌تر می‌تواند زودتر از پکت‌های قدیمی‌ترِ گیرکرده در صف retransmission برسد.
+    حداکثر تا max_wait ثانیه صبر می‌کند."""
     waited = 0
     while waited < max_wait:
         if count_received(sub_log_path) >= expected_count:
@@ -117,12 +140,12 @@ def append_summary(mode, run_idx, received, expected, completed, waited_s):
 
 def run_scenario(mode, run_idx):
     print(f"\n==========================================")
-    print(f"    Run {run_idx}/{NUM_RUNS} — {mode.upper()} Scenario (DDIL + Blackout Probe + Recovery)")
+    print(f"    Run {run_idx}/{NUM_RUNS} — {mode.upper()} Scenario "
+          f"(DDIL + Intermittent + Blackout Probe + Recovery)")
     print(f"==========================================")
 
     exec_binary = EXEC_ADP if mode == "adaptive" else EXEC_STD
 
-    # اطمینان از اینکه پروسه‌ی باقی‌مانده از اجرای قبلی وجود ندارد
     run_cmd(f"pkill -9 -f {os.path.basename(exec_binary)}")
     time.sleep(1)
 
@@ -145,10 +168,14 @@ def run_scenario(mode, run_idx):
         )
 
         for stage in STAGES:
-            print(f"[{stage['label']}] delay={stage['delay']}ms jitter={stage['jitter']}ms "
-                  f"loss={stage['loss']}% rate={stage['rate']}")
-            apply_netem(loss=stage["loss"], delay=stage["delay"], jitter=stage["jitter"], rate=stage["rate"])
-            time.sleep(stage["duration"])
+            if stage.get("type") == "intermittent":
+                run_intermittent(stage)
+            else:
+                print(f"[{stage['label']}] delay={stage['delay']}ms jitter={stage['jitter']}ms "
+                      f"loss={stage['loss']}% rate={stage['rate']}")
+                apply_netem(loss=stage["loss"], delay=stage["delay"],
+                            jitter=stage["jitter"], rate=stage["rate"])
+                time.sleep(stage["duration"])
 
         pub_proc.wait()
         apply_netem(0, 0)
